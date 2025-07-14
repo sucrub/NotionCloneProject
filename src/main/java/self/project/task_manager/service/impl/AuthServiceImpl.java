@@ -5,6 +5,7 @@ import io.jsonwebtoken.SignatureAlgorithm;
 import javax.crypto.SecretKey;
 import org.modelmapper.ModelMapper;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
 import self.project.task_manager.dto.UserDTO;
 import self.project.task_manager.model.Role;
@@ -12,6 +13,7 @@ import self.project.task_manager.model.User;
 import self.project.task_manager.repository.UserRepository;
 import self.project.task_manager.service.AuthService;
 
+import java.util.Date;
 import java.util.Optional;
 
 @Service
@@ -19,11 +21,16 @@ public class AuthServiceImpl implements AuthService {
     private final UserRepository userRepository;
     private final ModelMapper modelMapper = new ModelMapper();
     private final SecretKey jwtSecretKey;
+    private final PasswordEncoder passwordEncoder;
+
+    // Token expiration time (24 hours)
+    private static final long JWT_EXPIRATION_TIME = 86400000; // 24 hours in milliseconds
 
     @Autowired
-    public AuthServiceImpl(UserRepository userRepository, SecretKey jwtSecretKey) {
+    public AuthServiceImpl(UserRepository userRepository, SecretKey jwtSecretKey, PasswordEncoder passwordEncoder) {
         this.userRepository = userRepository;
         this.jwtSecretKey = jwtSecretKey;
+        this.passwordEncoder = passwordEncoder;
     }
 
     @Override
@@ -32,11 +39,8 @@ public class AuthServiceImpl implements AuthService {
         if(userOpt.isPresent()) {
             throw new RuntimeException("User with this email already exists");
         }
-        // Encrypt password using JWT
-        String encryptedPassword = Jwts.builder()
-                .setSubject(user.getPassword())
-                .signWith(jwtSecretKey, SignatureAlgorithm.HS256)
-                .compact();
+        // Encrypt password using BCrypt (recommended approach)
+        String encryptedPassword = passwordEncoder.encode(user.getPassword());
         user.setPassword(encryptedPassword);
         user.setActive(true);
         user.setRole(Role.USER.getRoleName());
@@ -51,21 +55,26 @@ public class AuthServiceImpl implements AuthService {
             throw new RuntimeException("Invalid email or password");
         }
         User user = userOpt.get();
-        // Encrypt the input password to compare with stored encrypted password
-        String encryptedInputPassword = Jwts.builder()
-                .setSubject(password)
-                .signWith(jwtSecretKey, SignatureAlgorithm.HS256)
-                .compact();
-        if (!user.getPassword().equals(encryptedInputPassword)) {
+
+        // Check password using BCrypt
+        if (!passwordEncoder.matches(password, user.getPassword())) {
             throw new RuntimeException("Invalid email or password");
         }
+
         UserDTO userDTO = modelMapper.map(user, UserDTO.class);
-        // Generate access token for the user
+
+        // Generate access token for the user with expiration
+        Date now = new Date();
+        Date expiryDate = new Date(now.getTime() + JWT_EXPIRATION_TIME);
+
         String accessToken = Jwts.builder()
                 .setSubject(user.getEmail())
                 .claim("role", user.getRole())
+                .setIssuedAt(now)
+                .setExpiration(expiryDate)
                 .signWith(jwtSecretKey, SignatureAlgorithm.HS256)
                 .compact();
+
         userDTO.setAccessToken(accessToken);
         return userDTO;
     }
